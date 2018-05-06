@@ -19,13 +19,18 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 )
 
 const (
 	// Version follows semver.
 	Version = "0.1.0"
+
+	// NodeDistributionURL is the URL of Node.js distribution list.
+	NodeDistributionURL = "https://nodejs.org/dist/"
 )
 
+// ErrorStatus is the type to express the error status within nvmg command.
 type ErrorStatus int
 
 const (
@@ -102,7 +107,7 @@ func (n *NVMG) Run() ErrorStatus {
 
 	switch n.subcommand {
 	case "install":
-		n.printfOut("install") // TODO: replace here to actual command.
+		n.Install()
 	case "uninstall", "remove", "delete":
 		n.printfOut("uninstall") // TODO: replace here to actual command.
 	case "use":
@@ -131,7 +136,60 @@ func (n *NVMG) printVersion() {
 	fmt.Printf("nvmg version: %v\n", Version)
 }
 
+// printHelp just print the usage of nvmg.
 func (n *NVMG) printHelp() {
 	fmt.Printf("%v\n", helpMessage)
 	os.Exit(0)
+}
+
+// Install fetch pre-build binary from the distribution and expand the compressed file in temp dir
+// and move the directory into configured directory.
+func (n *NVMG) Install(ver string) ErrorStatus {
+	return ExitStatusOK
+}
+
+// nodeBinaryArchinveName generates the filename of archive file uploaded on the distribution page.
+// The CPU architecture name and OS platform name are listed here:
+//    https://go.googlesource.com/go/+/master/src/go/build/syslist.go
+func nodeBinaryArchiveName(ver string) string {
+	var platform, arch, ext string
+	switch runtime.GOOS {
+	case "linux":
+		platform = "linux"
+		ext = "tar.gz"
+	case "darwin":
+		platform = "darwin"
+		ext = "tar.gz"
+	case "windows":
+		platform = "win"
+		ext = "zip"
+	case "solaris":
+		platform = "sunos"
+		ext = "tar.gz"
+	default:
+		platform = "linux"
+		ext = "tar.gz"
+	}
+
+	// TODO: there's no easy way to get ARM version from runtime, so it requires some way to
+	// embed build target ARM version. This should be achieved in the same method as runtime.GOOS.
+	// (ref. https://go.googlesource.com/go/+/master/src/go/build/syslist.go)
+	switch runtime.GOARCH {
+	case "386":
+		arch = "x86"
+	case "amd64":
+		arch = "x64"
+	case "arm64":
+		arch = "arm64"
+	case "ppc64":
+		arch = "ppc64"
+	case "ppc64le":
+		arch = "ppc64le"
+	case "s390x":
+		arch = "s390x"
+	default:
+		arch = "x64"
+	}
+
+	return fmt.Sprintf("node-%v-%v-%v.%v", ver, platform, arch, ext)
 }
