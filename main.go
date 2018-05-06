@@ -23,6 +23,9 @@ func main() {
 	if errStatus != ExitStatusOK {
 		os.Exit(1)
 	}
-	nvmg.Run()
+
+	if errStatus := nvmg.Run(); errStatus != ExitStatusOK {
+		os.Exit(1)
+	}
 	os.Exit(0)
 }

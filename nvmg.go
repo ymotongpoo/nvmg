@@ -45,7 +45,7 @@ type NVMG struct {
 	flags        *flag.FlagSet
 	versionFlag  *bool
 	helpFlag     *bool
-	subcommand   *string
+	subcommand   string
 }
 
 // NewNVMG returns a new instance of NVMG with the initialization of parsing arguments.
@@ -68,12 +68,16 @@ func NewNVMG(args []string) (*NVMG, ErrorStatus) {
 		return nil, ExitStatusError
 	}
 	if len(flags.Args()) > 0 {
-		*nvmg.subcommand = flags.Arg(0)
+		nvmg.subcommand = flags.Arg(0)
 	}
 
 	nvmg.flags = flags
 
 	return nvmg, ExitStatusOK
+}
+
+func (n *NVMG) printfOut(s string) (int, error) {
+	return fmt.Fprintf(n.ioout, "%v\n", s)
 }
 
 // Run executes the command.
@@ -91,14 +95,16 @@ func (n *NVMG) Run() ErrorStatus {
 		return ExitStatusOK
 	}
 
-	if n.subcommand == nil {
+	if n.subcommand == "" {
 		n.printHelp()
 		return ExitStatusOK
 	}
 
-	switch *n.subcommand {
+	switch n.subcommand {
 	case "install":
+		n.printfOut("install") // TODO: replace here to actual command.
 	case "uninstall", "remove", "delete":
+		n.printfOut("uninstall") // TODO: replace here to actual command.
 	case "use":
 	case "exec":
 	case "run":
