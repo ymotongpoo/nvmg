@@ -20,6 +20,9 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strings"
+
+	"github.com/blang/semver"
 )
 
 const (
@@ -28,6 +31,9 @@ const (
 
 	// NodeDistributionURL is the URL of Node.js distribution list.
 	NodeDistributionURL = "https://nodejs.org/dist/"
+
+	// NodeIndexURL is the URL of index.json
+	NodeIndexURL = "https://nodejs.org/dist/index.json"
 )
 
 // ErrorStatus is the type to express the error status within nvmg command.
@@ -42,20 +48,27 @@ const (
 
 	// ExitStatusNotInitialized is the status where NVMG is called without the initialization.
 	ExitStatusNotInitialized
+
+	// ExitStatusVersionNotFound is the status where invalid version number is specified.
+	ExitStatusVersionNotFound
 )
 
 // NVMG is the struct to express the command `nvmg`
 type NVMG struct {
+	// ioout and ioerr are the targets for stdout and stderr caused by nvmg command.
 	ioout, ioerr io.Writer
-	flags        *flag.FlagSet
-	versionFlag  *bool
-	helpFlag     *bool
-	subcommand   string
+	// args should hold os.Args[1:]
+	args []string
+	// mainFlags is the root FlagSet of nvmg command.
+	mainFlags   *flag.FlagSet
+	versionFlag *bool
+	helpFlag    *bool
 }
 
 // NewNVMG returns a new instance of NVMG with the initialization of parsing arguments.
 func NewNVMG(args []string) (*NVMG, ErrorStatus) {
 	nvmg := &NVMG{
+		args:  args,
 		ioout: os.Stdout,
 		ioerr: os.Stderr,
 	}
@@ -72,12 +85,7 @@ func NewNVMG(args []string) (*NVMG, ErrorStatus) {
 	if err := flags.Parse(args[1:]); err != nil {
 		return nil, ExitStatusError
 	}
-	if len(flags.Args()) > 0 {
-		nvmg.subcommand = flags.Arg(0)
-	}
-
-	nvmg.flags = flags
-
+	nvmg.mainFlags = flags
 	return nvmg, ExitStatusOK
 }
 
@@ -87,7 +95,7 @@ func (n *NVMG) printfOut(s string) (int, error) {
 
 // Run executes the command.
 func (n *NVMG) Run() ErrorStatus {
-	if n.flags == nil {
+	if n.mainFlags == nil {
 		return ExitStatusNotInitialized
 	}
 
@@ -100,14 +108,15 @@ func (n *NVMG) Run() ErrorStatus {
 		return ExitStatusOK
 	}
 
-	if n.subcommand == "" {
+	subcommand := n.mainFlags.Arg(0)
+	if subcommand == "" {
 		n.printHelp()
 		return ExitStatusOK
 	}
 
-	switch n.subcommand {
+	switch subcommand {
 	case "install":
-		n.Install()
+		n.RunInstall()
 	case "uninstall", "remove", "delete":
 		n.printfOut("uninstall") // TODO: replace here to actual command.
 	case "use":
@@ -142,9 +151,46 @@ func (n *NVMG) printHelp() {
 	os.Exit(0)
 }
 
+// RunInstall parses the arguments for `install` subcommand and runs it accordingly.
+func (n *NVMG) RunInstall() ErrorStatus {
+	if len(n.args) < 2 {
+		return ExitStatusError
+	}
+	flags := flag.NewFlagSet("installFlags", flag.ExitOnError)
+	ltsFlag := flags.Bool("lts", false, "Refer to the Long-term support version for aliases.")
+	flags.Parse(n.args[1:])
+	if flags.NArg() < 1 {
+		return ExitStatusError
+	}
+	_ = ltsFlag // TODO: implement LTS context switch.
+	ver, errStatus := n.expandVersionNumber(flags.Arg(0))
+	if errStatus != ExitStatusOK {
+		return errStatus
+	}
+	return n.Install(ver)
+}
+
+// expandVersionNumber checks if the version number is valid and return
+func (n *NVMG) expandVersionNumber(ver string) (string, ErrorStatus) {
+	if strings.HasPrefix(ver, "v") {
+		ver = ver[1:]
+	}
+	if ver == "stable" {
+		// TODO: implement here.
+	}
+	v, err := semver.Parse(ver)
+	if err != nil {
+		fmt.Fprintf(n.ioerr, "%v\n", err)
+		return "", ExitStatusVersionNotFound
+	}
+	return fmt.Sprintf("v%v", v.String()), ExitStatusOK
+}
+
 // Install fetch pre-build binary from the distribution and expand the compressed file in temp dir
 // and move the directory into configured directory.
 func (n *NVMG) Install(ver string) ErrorStatus {
+	filename := nodeBinaryArchiveName(ver)
+	n.printfOut(filename)
 	return ExitStatusOK
 }
 
