@@ -18,11 +18,17 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"runtime"
 	"strings"
 
 	"github.com/blang/semver"
+	"github.com/mholt/archiver"
+	pe "github.com/pkg/errors"
 )
 
 const (
@@ -36,22 +42,13 @@ const (
 	NodeIndexURL = "https://nodejs.org/dist/index.json"
 )
 
-// ErrorStatus is the type to express the error status within nvmg command.
-type ErrorStatus int
+type NVMGError struct {
+	ErrorString string
+}
 
-const (
-	// ExitStatusOK is the status where parsing arguments went successful.
-	ExitStatusOK ErrorStatus = iota
-
-	// ExitStatusError is the status where parsing arguments went failure.
-	ExitStatusError
-
-	// ExitStatusNotInitialized is the status where NVMG is called without the initialization.
-	ExitStatusNotInitialized
-
-	// ExitStatusVersionNotFound is the status where invalid version number is specified.
-	ExitStatusVersionNotFound
-)
+func (ne *NVMGError) Error() string {
+	return ne.ErrorString
+}
 
 // NVMG is the struct to express the command `nvmg`
 type NVMG struct {
@@ -63,14 +60,16 @@ type NVMG struct {
 	mainFlags   *flag.FlagSet
 	versionFlag *bool
 	helpFlag    *bool
+	Home        string
 }
 
 // NewNVMG returns a new instance of NVMG with the initialization of parsing arguments.
-func NewNVMG(args []string) (*NVMG, ErrorStatus) {
+func NewNVMG(args []string, home string) (*NVMG, error) {
 	nvmg := &NVMG{
 		args:  args,
 		ioout: os.Stdout,
 		ioerr: os.Stderr,
+		Home:  home,
 	}
 
 	flags := flag.NewFlagSet("nvmgFlags", flag.ExitOnError)
@@ -83,10 +82,10 @@ func NewNVMG(args []string) (*NVMG, ErrorStatus) {
 	nvmg.helpFlag = flags.Bool("help", false, "Show this message.")
 
 	if err := flags.Parse(args[1:]); err != nil {
-		return nil, ExitStatusError
+		return nil, pe.Wrap(err, fmt.Sprintf("Could not parse the argument: %v", args[1:]))
 	}
 	nvmg.mainFlags = flags
-	return nvmg, ExitStatusOK
+	return nvmg, nil
 }
 
 func (n *NVMG) printfOut(s string) (int, error) {
@@ -94,29 +93,29 @@ func (n *NVMG) printfOut(s string) (int, error) {
 }
 
 // Run executes the command.
-func (n *NVMG) Run() ErrorStatus {
+func (n *NVMG) Run() error {
 	if n.mainFlags == nil {
-		return ExitStatusNotInitialized
+		return fmt.Errorf("nvmg instance is not initialized")
 	}
 
 	switch {
 	case *n.versionFlag:
 		n.printVersion()
-		return ExitStatusOK
+		return nil
 	case *n.helpFlag:
 		n.printHelp()
-		return ExitStatusOK
+		return nil
 	}
 
 	subcommand := n.mainFlags.Arg(0)
 	if subcommand == "" {
 		n.printHelp()
-		return ExitStatusOK
+		return nil
 	}
 
 	switch subcommand {
 	case "install":
-		n.RunInstall()
+		return n.RunInstall()
 	case "uninstall", "remove", "delete":
 		n.printfOut("uninstall") // TODO: replace here to actual command.
 	case "use":
@@ -137,7 +136,7 @@ func (n *NVMG) Run() ErrorStatus {
 	default:
 	}
 
-	return ExitStatusOK
+	return nil
 }
 
 // printVersion outputs the version of nvmg itself.
@@ -152,26 +151,26 @@ func (n *NVMG) printHelp() {
 }
 
 // RunInstall parses the arguments for `install` subcommand and runs it accordingly.
-func (n *NVMG) RunInstall() ErrorStatus {
+func (n *NVMG) RunInstall() error {
 	if len(n.args) < 2 {
-		return ExitStatusError
+		return fmt.Errorf("not enough arguments: %v", n.args)
 	}
 	flags := flag.NewFlagSet("installFlags", flag.ExitOnError)
 	ltsFlag := flags.Bool("lts", false, "Refer to the Long-term support version for aliases.")
 	flags.Parse(n.args[1:])
 	if flags.NArg() < 1 {
-		return ExitStatusError
+		return fmt.Errorf("not enough arguments for install: %v", flags.Args())
 	}
 	_ = ltsFlag // TODO: implement LTS context switch.
-	ver, errStatus := n.expandVersionNumber(flags.Arg(0))
-	if errStatus != ExitStatusOK {
-		return errStatus
+	ver, err := n.expandVersionNumber(flags.Arg(1))
+	if err != nil {
+		return err
 	}
 	return n.Install(ver)
 }
 
 // expandVersionNumber checks if the version number is valid and return
-func (n *NVMG) expandVersionNumber(ver string) (string, ErrorStatus) {
+func (n *NVMG) expandVersionNumber(ver string) (string, error) {
 	if strings.HasPrefix(ver, "v") {
 		ver = ver[1:]
 	}
@@ -180,18 +179,86 @@ func (n *NVMG) expandVersionNumber(ver string) (string, ErrorStatus) {
 	}
 	v, err := semver.Parse(ver)
 	if err != nil {
-		fmt.Fprintf(n.ioerr, "%v\n", err)
-		return "", ExitStatusVersionNotFound
+		return "", pe.Wrapf(err, "invalid version number: %v", ver)
 	}
-	return fmt.Sprintf("v%v", v.String()), ExitStatusOK
+	return fmt.Sprintf("v%v", v.String()), nil
 }
 
 // Install fetch pre-build binary from the distribution and expand the compressed file in temp dir
 // and move the directory into configured directory.
-func (n *NVMG) Install(ver string) ErrorStatus {
+func (n *NVMG) Install(ver string) error {
 	filename := nodeBinaryArchiveName(ver)
-	n.printfOut(filename)
-	return ExitStatusOK
+	dirname := ver
+	u, err := url.Parse(NodeDistributionURL)
+	if err != nil {
+		return err
+	}
+	p, err := url.Parse(path.Join("./", dirname, filename))
+	if err != nil {
+		return err
+	}
+	target := u.ResolveReference(p)
+	n.printfOut(target.String())
+	resp, err := http.Get(target.String())
+	if err != nil {
+		return err
+	}
+	downloaded := path.Join(os.TempDir(), filename)
+	file, err := os.Create(downloaded)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return pe.Wrapf(err, "failed to download file: %v", filename)
+	}
+	destDir := path.Join(n.Home, ver)
+	return expandArchiveFile(downloaded, destDir)
+}
+
+func expandArchiveFile(filename, dest string) error {
+	var a archiver.Archiver
+	switch {
+	case strings.HasSuffix(filename, ".tar.gz"), strings.HasSuffix(filename, ".tgz"):
+		a = archiver.TarGz
+	case strings.HasSuffix(filename, ".tar.xz"), strings.HasSuffix(filename, ".txz"):
+		a = archiver.TarXZ
+	case strings.HasSuffix(filename, ".tar.bz2"), strings.HasSuffix(filename, ".tbz"):
+		a = archiver.TarBz2
+	case strings.HasSuffix(filename, ".zip"):
+		a = archiver.Zip
+	}
+
+	tempDir, err := ioutil.TempDir("", "nvmg")
+	defer os.RemoveAll(tempDir)
+	if err != nil {
+		return pe.Wrap(err, "couldn't craete tempdir")
+	}
+	if err := a.Open(filename, tempDir); err != nil {
+		return pe.Wrapf(err, "couldn't open archive file into temp directory: %v", filename)
+	}
+	files, err := ioutil.ReadDir(tempDir)
+	if err != nil {
+		return pe.Wrapf(err, "couldn't read temp directory for expand: %v", tempDir)
+	}
+	if len(files) == 1 && files[0].IsDir() {
+		tempDir = path.Join(tempDir, files[0].Name())
+	}
+	targetFiles, err := ioutil.ReadDir(tempDir)
+	if err != nil {
+		return pe.Cause(err)
+	}
+	if err := os.MkdirAll(dest, os.FileMode(0755)); err != nil {
+		return pe.Cause(err)
+	}
+	for _, f := range targetFiles {
+		s := path.Join(tempDir, f.Name())
+		t := path.Join(dest, f.Name())
+		if err := os.Rename(s, t); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // nodeBinaryArchinveName generates the filename of archive file uploaded on the distribution page.

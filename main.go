@@ -15,16 +15,27 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"path"
 )
 
 func main() {
-	nvmg, errStatus := NewNVMG(os.Args)
-	if errStatus != ExitStatusOK {
+	home := path.Join(os.Getenv("HOME"), ".nvmg")
+	_, err := os.Open(home)
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(home, os.FileMode(0755)); err != nil {
+			fmt.Printf("error on making nvmg home: %v", home)
+			os.Exit(1)
+		}
+	}
+	nvmg, err := NewNVMG(os.Args, home)
+	if err != nil {
+		fmt.Println(err)
 		os.Exit(1)
 	}
-
-	if errStatus := nvmg.Run(); errStatus != ExitStatusOK {
+	if err := nvmg.Run(); err != nil {
+		fmt.Println(err)
 		os.Exit(1)
 	}
 	os.Exit(0)
